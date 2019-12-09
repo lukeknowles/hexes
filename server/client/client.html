@@ -1,0 +1,441 @@
+<html>
+	<head>
+		<title>
+			HEXES Game
+		</title>
+		
+		<script src="_assets/jquery/jquery.js"></script>
+		<script src="_assets/pixijs/pixi.min.js"></script>
+		<script src="_assets/pixi-viewport/pixi-viewport.min.js"></script>
+		<script src="/socket.io/socket.io.js"></script>
+		
+		<style type="text/css">
+			html,body
+			{
+				margin:0;
+			}
+		</style>
+	</head>
+	
+	<body>
+		<div id="hexInfo" style="height: auto;width: auto; bottom: 0; right:0;position:absolute;display:none;">
+		<div>
+			<input type="text" id="moveUnitsAmount" min="1" max="9999999999" style="width: 5em; height: 2.2em; padding: 10px; border: 1px solid black; border-radius: 5px; outline-width: 0; background-color: rgb(71, 36, 28, .85); font-size: 2em; color: white;" autocomplete="off";>
+			</div>
+		</div>
+	</body>
+	
+	<script>
+	function loadAssets(callback)
+	{
+		PIXI.loader.add("_assets/fonts/hex_units7.fnt");
+		PIXI.loader.add("_assets/fonts/hex_units7_0.png");
+		PIXI.loader.load(callback);
+	}
+
+	function gameLoop()
+	{
+		var game = new PIXI.Application({
+			width: window.innerWidth,
+			height: window.innerHeight,
+			backgroundColor: 0x4898e2,
+			sharedTicker: false
+		});
+
+		document.body.appendChild(game.view);
+		
+		var vp = new PIXI.extras.Viewport({
+			screenWidth: window.innerWidth,
+			screenHeight: window.innerHeight,
+			worldWidth: window.innerWidth,
+			worldHeight: window.innerHeight,
+			interaction: game.renderer.plugins.interaction
+		});
+		
+			
+		game.stage.addChild(vp);
+		vp.drag().pinch().wheel().decelerate();
+		
+		var hexShapePoly = new PIXI.Polygon
+		([
+			new PIXI.Point(150, 0),
+			new PIXI.Point(100, 0),
+			new PIXI.Point(75, 50),
+			new PIXI.Point(100, 100),
+			new PIXI.Point(150, 100),
+			new PIXI.Point(175, 50),
+			new PIXI.Point(150, 0)
+		]);
+
+		/*var ticker = PIXI.ticker.shared;
+		// Set this to prevent starting this ticker when listeners are added to it
+		// By default this is true only on the PIXI.ticker.shared instance
+		ticker.autoStart = false;
+		ticker.maxFPS = 5;
+		// Call this to ensure the ticker is stopped right now
+		ticker.stop();
+		// Call this when you are ready for a running ticker
+		ticker.start();*/
+		
+		var hexObj = new PIXI.Graphics();
+		var fogObj = new PIXI.Graphics();
+		var unitObj = new PIXI.Graphics();
+		hexObj.beginFill(0xFFFFFF, 1);
+		fogObj.beginFill(0x000000, 1);
+		unitObj.beginFill(0x000000, 1);
+		unitObj.lineStyle(1, 0xFF0000);
+
+
+		var hexOutlineRed = new PIXI.Graphics();
+		hexOutlineRed.x = 0;
+		hexOutlineRed.y = 0;
+		hexOutlineRed.lineStyle(3, 0xf72000, 1);
+
+		hexOutlineRed.moveTo(150, 0);
+		hexOutlineRed.lineTo(150, 0);
+		hexOutlineRed.lineTo(100, 0);
+		hexOutlineRed.lineTo(75, 50);
+		hexOutlineRed.lineTo(100, 100);
+		hexOutlineRed.lineTo(150, 100);
+		hexOutlineRed.lineTo(175, 50);
+		hexOutlineRed.lineTo(150, 0);
+
+		var hexOutlineYellow = new PIXI.Graphics();
+		hexOutlineYellow.x = 0;
+		hexOutlineYellow.y = 0;
+		hexOutlineYellow.lineStyle(3, 0xfff13a, 1);
+
+		hexOutlineYellow.moveTo(150, 0);
+		hexOutlineYellow.lineTo(150, 0);
+		hexOutlineYellow.lineTo(100, 0);
+		hexOutlineYellow.lineTo(75, 50);
+		hexOutlineYellow.lineTo(100, 100);
+		hexOutlineYellow.lineTo(150, 100);
+		hexOutlineYellow.lineTo(175, 50);
+		hexOutlineYellow.lineTo(150, 0);
+		
+		hexObj.lineStyle(0, 0x719180, .75, 1);
+		fogObj.lineStyle(0, 0x000000, .75, 1);
+		hexObj.drawPolygon(hexShapePoly).endFill();
+		fogObj.drawPolygon(hexShapePoly).endFill();
+		unitObj.drawRect(0, 0, 10, 10).endFill();
+
+		
+		hexTexture = game.renderer.generateTexture(hexObj);
+		fogTexture = game.renderer.generateTexture(fogObj);
+		hexRingYellowTexture = game.renderer.generateTexture(hexOutlineYellow);
+		hexRingRedTexture = game.renderer.generateTexture(hexOutlineRed);
+		unitObjTexture = game.renderer.generateTexture(unitObj);
+		
+		var redRing;
+		var yellowRing;
+		
+		var gameMap = [[],[]];
+		var visibleWorld = [[],[]]
+		
+		var player =
+		{
+			id: null,
+			color: null
+		};
+		
+		var stateMachine = 
+		{
+			state: "IDLE",
+			data: null
+		};
+		
+		var rows;
+		var cols;
+		
+		var socket = io();
+		
+		function setIdleState()
+		{
+			stateMachine.state = "IDLE";
+			stateMachine.data = null;
+		}
+		
+		function attachHexClickEvent(r, c)
+		{
+			
+			gameMap[r][c].on("click", function(e)
+			{	
+				if((stateMachine.state != "MOVING_UNITS") && gameMap[r][c].tint != 0 && visibleWorld[r][c].owner == player.id)
+				{
+					stateMachine.state = "MOVING_UNITS";
+					stateMachine.data = 
+					{
+						fromHex: {row: r, col: c}
+					};
+
+					yellowRing.position.x = gameMap[r][c].position.x - 50;
+					yellowRing.position.y = gameMap[r][c].position.y - 50;
+					redRing.position.x = gameMap[r][c].position.x - 50;
+					redRing.position.y = gameMap[r][c].position.y - 50;
+					redRing.visible = true;
+
+					$("#hexInfo").css("display", "block");
+				}
+				
+				if((stateMachine.state == "MOVING_UNITS") && (stateMachine.data != null) && !(stateMachine.data.fromHex.row == r && stateMachine.data.fromHex.col == c) && gameMap[r][c].tint != 0)
+				{
+					redRing.visible = false;
+					yellowRing.position.x = gameMap[r][c].position.x - 50;
+					yellowRing.position.y = gameMap[r][c].position.y - 50;
+
+					socket.emit("moveUnits", {
+						fromHex: [stateMachine.data.fromHex.row, stateMachine.data.fromHex.col],
+						toHex: [r, c],
+						units: parseInt($("#moveUnitsAmount").val())
+					});
+					
+					setIdleState();
+				}
+			});
+		}
+		
+		function attachHexMouseOverEvent(r, c)
+		{
+			gameMap[r][c].on("mouseover", function(e)
+			{
+				if(!yellowRing.visible)
+				{
+					yellowRing.visible = true;
+				}
+
+				if((stateMachine.state == "MOVING_UNITS") && !(stateMachine.data.fromHex.row == r && stateMachine.data.fromHex.col == c))
+				{
+					redRing.position.x = gameMap[r][c].position.x - 50;
+					redRing.position.y = gameMap[r][c].position.y - 50;
+				}
+				
+				if(stateMachine.state != "MOVING_UNITS")
+				{
+					yellowRing.position.x = gameMap[r][c].position.x - 50;
+					yellowRing.position.y = gameMap[r][c].position.y - 50;
+				}
+			});
+		}
+		
+		/*function attachHexMouseOutEvent(r, c)
+		{
+
+		}*/
+
+		socket.on("init", function(data)
+		{
+			console.log(data);
+			rows = data["gameWorld"].length;
+			cols = data["gameWorld"][0].length;
+			
+			player.id = data["playerId"];
+			player.color = data["playerColor"];
+			visibleWorld = data["visibleWorld"];
+			
+			for(var r = 0; r < rows; r++)
+			{
+				if(data["gameWorld"][r] != null)
+				{
+					gameMap[r] = new PIXI.Sprite(hexTexture);
+					gameMap[r].tint = 0xFFFFFF;
+				}
+				else
+				{
+					gameMap[r] = null;
+				}
+				
+				for(var c = 0; c < data["gameWorld"][r].length; c++)
+				{
+					if(data["gameWorld"][r][c] != null)
+					{
+						gameMap[r][c] = new PIXI.Sprite(hexTexture);
+						vp.addChild(gameMap[r][c]);
+						gameMap[r][c].tint = 0xFFFFFF;
+
+						if(c % 2)
+						{
+							gameMap[r][c].position.set(75+75*c, (50 + 100*r) -50); //lower
+						}
+						else
+						{
+							gameMap[r][c].position.set(75+(75)*c, (0 + 100*r)-50);
+						}
+						gameMap[r][c].anchor = new PIXI.Point(0.5, 0.5);
+						var txt = new PIXI.extras.BitmapText("1", {font: "30px Terminal"});
+						txt.anchor = new PIXI.Point(0.5, 0.5);
+						gameMap[r][c].addChild(txt);
+						gameMap[r][c].interactive = true;
+
+						attachHexMouseOverEvent(r, c);
+						//attachHexMouseOutEvent(r, c);
+						attachHexClickEvent(r, c);
+					}
+					else
+					{
+						gameMap[r][c] = null;
+					}
+					
+					if(data["visibleWorld"][r][c] == "*")
+					{
+						gameMap[r][c].texture = fogTexture;
+						gameMap[r][c]["children"][0].text = "";
+					}
+					
+					if(data["visibleWorld"][r][c] != "*" && data["visibleWorld"][r][c] != null)
+					{
+						gameMap[r][c]["children"][0].text = data["visibleWorld"][r][c].units;
+						gameMap[r][c].tint = 0x84b79c;
+					}
+				}
+			}
+			
+			vp.moveCenter(cols * 45, rows * 50);
+			vp.zoom((cols * 40 / rows * 50) / 6, true);
+			
+			gameMap[data["initialHex"]["row"]][data["initialHex"]["col"]].tint = data["playerColor"];
+
+			redRing = new PIXI.Sprite(hexRingRedTexture);
+			yellowRing = new PIXI.Sprite(hexRingYellowTexture);
+			vp.addChild(redRing);
+			vp.addChild(yellowRing);
+			redRing.visible = false;
+			yellowRing.visible = false;
+		});
+		
+		socket.on("message", function(data)
+		{
+			if(data == "INC")
+			{
+				console.log("RECEIVED " + Date.now());
+				for(var r = 0; r < rows; r++)
+				{
+					for(var c = 0; c < cols; c++)
+					{
+						if(gameMap[r][c] != null)
+						{
+							var curUnit = parseInt(gameMap[r][c]["children"][0].text);
+							
+							if(visibleWorld[r][c].owner == null)
+							{
+								curUnit += 1;
+							}
+							else
+							{
+								curUnit += 3;
+							}
+
+							gameMap[r][c]["children"][0].text = curUnit;
+						}
+					}
+				}
+			}
+		});
+		
+		/*socket.on('join', function(data)
+		{
+			
+		});
+		
+		socket.on('leave', function(data)
+		{
+			
+		});*/
+		
+		socket.on("updateWorld", function(data)
+		{
+			for(var r = 0; r < rows; r++)
+			{
+				for(var c = 0; c < data[r].length; c++)
+				{
+					if(data[r][c] != null)
+					{
+						
+					}
+					else
+					{
+
+					}
+					
+					if(data[r][c] == "*")
+					{2
+						gameMap[r][c].tint = 0xFFFFFF;
+						gameMap[r][c].texture = fogTexture;
+						gameMap[r][c]["children"][0].text = "";
+					}
+					
+					if(data[r][c] != "*" && data[r][c] != null)
+					{
+						gameMap[r][c].texture = hexTexture;
+						visibleWorld[r][c] = data[r][c];
+
+						if(gameMap[r][c].tint == 0x84b79c)
+						{
+							gameMap[r][c].tint = 0xFFFFFF;
+						}
+						
+						if(data[r][c].color != null)
+						{
+							gameMap[r][c].tint = data[r][c].color;
+						}
+						else
+						{
+							gameMap[r][c].tint = 0x84b79c;
+						}
+						
+						gameMap[r][c].dirty++;
+						gameMap[r][c].clearDirty++;
+						gameMap[r][c]["children"][0].text = data[r][c].units;
+					}
+				}
+			}
+		});
+
+		socket.on("moveUnits", function(data) {
+			if(data.initial != null) { gameMap[data.originRow][data.originCol]["children"][0].text = (parseInt(gameMap[data.originRow][data.originCol]["children"][0].text) - data.units);}
+
+			let units = new PIXI.Sprite(unitObjTexture);
+			vp.addChild(units);
+			units.position = gameMap[data.originRow][data.originCol].position;
+
+			let xDifference = (gameMap[data.destinationRow][data.destinationCol].position.x - gameMap[data.originRow][data.originCol].position.x);
+			let yDifference = (gameMap[data.destinationRow][data.destinationCol].position.y - gameMap[data.originRow][data.originCol].position.y);
+
+			var animateMovement = function(delta)
+			{
+				units.position.x += (xDifference / 180) * delta;
+				units.position.y += (yDifference / 180) * delta;
+
+				let xDif = (gameMap[data.destinationRow][data.destinationCol].position.x - units.position.x);
+
+				let yDif = (gameMap[data.destinationRow][data.destinationCol].position.y - units.position.y);
+
+				if((Math.abs(xDif + yDif)) <= 1)
+				{
+					vp.removeChild(units);
+					game.ticker.remove(animateMovement);
+				}
+			}
+			game.ticker.add(animateMovement);
+		});
+		
+		$(document).contextmenu(function() 
+		{
+			if(stateMachine.state == "MOVING_UNITS")
+			{
+					$("#hexInfo").css("display", "none");
+					
+					stateMachine.state = "IDLE";
+					stateMachine.data = null;
+					yellowRing.position.x = redRing.position.x;
+					yellowRing.position.y = redRing.position.y;
+					redRing.visible = false;
+			}
+			return false;
+		});
+	}
+
+	loadAssets(gameLoop);
+	</script>
+	
+</html>
