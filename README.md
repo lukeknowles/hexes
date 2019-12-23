@@ -1,7 +1,8 @@
 # hexes
 A browser-based realtime multiplayer strategy game using Node.js and PixiJS.
 
-##Usage
+## Usage
+
 __(1).__ Navigate to `hexes/server` in the terminal and execute the `npm install` command to install the project dependencies from package.json.
 
 __(2).__ While still in the `hexes/server` directory, execute `node server` to launch the gameserver.
