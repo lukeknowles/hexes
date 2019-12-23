@@ -12,6 +12,7 @@ The basis of the game is simple: a map is procedurally generated whenever a new 
   - When players leaves a match, their qeued unit movements in the match's movement pool are stopped -- any units already in transit simply stop existing. Their hexes are then deallocated and their unique color identifier is pushed back to an array so it can be used by the next player to join. Any variables, timers, and references to the player are deleted.
   - If the player is the last to leave a match, all the above is carried out in addition to the complete removal of all variables, timers, and references involving the match.
   - This flow generally tries to keep memory usage to a minimum by forcing players to use all the available resources (matches) before creating new ones, opting to 'cycle' persistent data such as color identifiers, and ensuring the complete elimination of all data regarding a match (especially timers) when no longer in use.
+ * A* pathfinding for unit movements.
 
 ## Usage
 
