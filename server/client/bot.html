@@ -1,0 +1,443 @@
+<html>
+	<head>
+		<title>
+			HEXES Game
+		</title>
+		
+		<script src="_assets/jquery/jquery.js"></script>
+		<script src="/socket.io/socket.io.js"></script>
+		
+		<style type="text/css">
+			html,body
+			{
+				margin: 0;
+				overflow: hidden;
+			}
+
+            #hex {
+                color: green;
+                display: inline-block;
+        
+            }
+            #hex:after {
+                content: '\002B23';
+            }
+
+            #grid {
+				display: inline-flex;
+				transform: scale(0.75);
+            }
+
+            #col {
+                display: inline-grid;
+                float: left;
+            }
+
+            .container {
+				margin: 0;
+				height: 100%;
+                display: inline-block;
+            }
+
+			.container.terminal {
+				background-color: black;
+				color: #42b52d;
+				height: 100vh;
+				overflow:scroll;
+				display: block;
+			}
+
+			.container.game {
+				
+				background-color:#5590d9;
+				width: 75vw;
+				height: 100vh;
+				overflow-x: scroll;
+				overflow-y: scroll;
+				
+				font-size: 5vw;
+                letter-spacing: -.8vw;
+                line-height: 3.75vw;
+				white-space: nowrap;
+				float: left;
+				
+			}
+
+            #grid #col:nth-of-type(2n+0) > #hex {
+                transform: translateY(1.85vw);
+            }
+
+			#unit {
+				position: absolute;
+				--display: inline;
+				color: hotpink;
+			}
+
+			#unit:after {
+				font-size: 2vw;
+				content: '\00FFED';
+				text-shadow: -1px 0 black, 0 1px black, 1px 0 black, 0 -1px black;
+			}
+
+		</style>
+	</head>
+	
+	<body>
+		<div class="container game" id="game">
+        	<div id="grid">
+
+			</div>
+		</div>
+		<div class="container terminal" id="terminal">
+			<p style="padding: 10px;" id="terminalText">
+
+			</p>
+		</div>
+
+	</body>
+	
+	<script>
+		var logger = {
+			terminal: $("#terminalText"),
+			events: {
+				join(id) {
+					return(`[JOINED AS]: ${id}`);
+				},
+				leave() {
+					return(`[LEFT GAME]`);
+				},
+				moveUnits(num, fromRow, fromCol, toRow, toCol) {
+					return(`>MOVING ${num} UNITS FROM [${fromRow},${fromCol}] TO [${toRow},${toCol}]`);
+				},
+				renderingMap() {
+					return(`>RENDERING MAP`);
+				},
+				initializing() {
+					return(`>INITIALIZING VARIABLES`);
+				},
+				incrementUnits(count) {
+					return(`>INCREMENTED UNITS ON ${count} HEXES`);
+				}
+			},
+			logEvent(e) {
+				$("#terminalText").html($("#terminalText").html() + e + "<br>");
+			},
+			clearTerminal() {
+				$("#terminalText").empty();
+			}
+		};
+
+		logger.logEvent(logger.events.initializing());
+
+		var game = {
+			mapRows: null,
+			mapCols: null,
+			map: [[],[]],
+			visibleWorld: [[], []],
+			player: {
+				id: null,
+				color: null
+			},
+			socket: null
+		}
+
+		var hex = {
+			row: null,
+			col: null,
+			units: null,
+			owner: null,
+			checksum: null
+		};
+
+		function getHex(r, c) {
+			return({
+				row: game.visibleWorld[r][c].row,
+				col: game.visibleWorld[r][c].col,
+				units: game.visibleWorld[r][c].units,
+				owner: game.visibleWorld[r][c].owner,
+				checksum: game.visibleWorld[r][c].checksum
+			});
+		}
+
+		function isValidHexPosition(row, col) {
+			return((row >= 0 && col >= 0 && row < game.mapRows && col < game.mapCols) && (game.visibleWorld[row][col] != null && game.visibleWorld[row][col] != "*"));
+		}
+
+		function getHexNeighbors(row, col) {
+			let neighbors = [];
+
+			if(isValidHexPosition(row-1, col)) { neighbors.push(getHex(row-1, col)); } // UP
+			if(isValidHexPosition(row, col+1)) { neighbors.push(getHex(row, col+1)); } // RIGHT
+			if(isValidHexPosition(row+1, col)) { neighbors.push(getHex(row+1, col)); } // DOWN
+			if(isValidHexPosition(row, col-1)) { neighbors.push(getHex(row, col-1)); } // LEFT
+			
+			if(col % 2 == 0) //even col, get the hexes to the NE and NW
+			{
+				if(isValidHexPosition(row-1, col-1)) { neighbors.push(getHex(row-1, col-1)); }
+				if(isValidHexPosition(row-1, col+1)) { neighbors.push(getHex(row-1, col+1)); }
+			}
+			else
+			{
+				if(isValidHexPosition(row+1, col-1)) { neighbors.push(getHex(row+1, col-1)); }
+				if(isValidHexPosition(row+1, col+1)) { neighbors.push(getHex(row+1, col+1)); }
+			}
+
+			return(neighbors);
+		}
+
+		/*var mapHistory = {
+			hex: {
+				ownershipHistory = [{owner: null, timestamp: null}],
+				movementHistory = [{unitPercentageChange: null, directionOfMovement: null, timestamp: null}]
+			},
+			ownershipChange(row, col, newOwner) {
+				this.map[row][col].ownershipHistory.push({owner: newOwner, timestamp: Date.now()});
+			},
+			unitMovement(fromRow, fromCol, fromHexUnitCount, toRow, toCol, toHexUnitCount, amount) {
+				this.map[fromRow][fromCol].movementHistory.push({
+					unitPercentageChange: (-100+(((fromHexUnitCount - amount)/(amount))*100)),
+					directionOfMovement: [],
+				});
+			}
+			map: [[],[]]
+		}*/
+
+		var bot = {
+			actionCooldownRange: [1000, 2500],
+			pvpAgression: 0,
+			generalMovementPriority: ["n", "ne", "e", "se", "s", "sw", "w", "nw"],
+			initialHex: {
+				row: null,
+				col: null
+			},
+			pvpHistory: {
+
+			},
+			getCooldown() {
+				return((Math.random() * (this.actionCooldownRange[1] - this.actionCooldownRange[0] + 1)) + this.actionCooldownRange[0]);
+			},
+		}
+
+		game.socket = io();
+
+		function formatHexColor(h) {
+			return("#" + h.toString(16));
+		}
+
+
+		game.socket.on("init", function(data)
+		{
+			console.log(data);
+
+			game.mapRows = data["gameWorld"].length;
+			game.mapCols = data["gameWorld"][0].length;
+			
+			game.player.id = data["playerId"];
+			game.player.color = data["playerColor"];
+			game.visibleWorld = data["visibleWorld"];
+
+			logger.logEvent(logger.events.join(game.player.id));
+			logger.logEvent(logger.events.renderingMap());
+			
+			for(var r = 0; r < game.mapRows; r++)
+			{
+				game.map[r] = [];
+				
+				for(var c = 0; c < game.mapCols; c++)
+				{
+
+					if($('#col[data-col="' + c + '"]')[0] == undefined) {
+						let newCol = $("<div/>", {
+							'id': 'col',
+							'data-col': c
+						});
+
+						$("#grid").append(newCol);
+					}
+
+					let newHex = $("<div/>", {
+							'id': 'hex',
+							'data-row': r
+					});
+
+					game.map[r][c] = newHex;
+
+					$('[data-col="' + c + '"]').append(newHex);
+
+					if(data["gameWorld"][r][c] == null)
+					{
+						$('[data-col="' + c + '"]').find($('[data-row="' + r + '"]')).css("color", "rgba(0,0,0,0)");
+						game.map[r][c] = null;
+					}
+					else
+					
+					if(data["visibleWorld"][r][c] == "*")
+					{
+						$('[data-col="' + c + '"]').find($('[data-row="' + r + '"]')).css("color", "#242424");
+					}
+					
+					if(data["visibleWorld"][r][c] != "*" && data["visibleWorld"][r][c] != null)
+					{
+
+					}
+				}
+			}
+
+			bot.initialHex = {row: data["initialHex"]["row"], col: data["initialHex"]["col"]};
+			$('[data-col="' + data["initialHex"]["col"] + '"]').find($('[data-row="' + data["initialHex"]["row"] + '"]')).css("color", formatHexColor(data["playerColor"]));
+			gameLoop();
+		});
+		
+		game.socket.on("message", function(data)
+		{
+			if(data == "INC")
+			{
+				var hexCount = 0;
+				for(var r = 0; r < game.mapRows; r++)
+				{
+					for(var c = 0; c < game.mapCols; c++)
+					{
+						if(game.visibleWorld[r][c] != null && game.visibleWorld[r][c] != "*")
+						{
+							hexCount++;
+							var curUnit = parseInt(game.visibleWorld[r][c]["units"]);
+							
+							if(game.visibleWorld[r][c].owner == null)
+							{
+								curUnit += 1;
+							}
+							else
+							{
+								curUnit += 3;
+							}
+
+							game.visibleWorld[r][c]["units"] = curUnit;
+						}
+					}
+				}
+
+				logger.logEvent(logger.events.incrementUnits(hexCount));
+			}
+		});
+		
+		game.socket.on("updateWorld", function(data)
+		{
+			game.visibleWorld = data;
+
+			for(var r = 0; r < game.mapRows; r++)
+			{
+				for(var c = 0; c < game.mapCols; c++)
+				{
+					if(data[r][c] == "*")
+					{
+						game.map[r][c].css("color", "#242424");
+					}
+
+					if(data[r][c] != null && data[r][c] != "*" && data[r][c].owner == null) {
+						game.map[r][c].css("color", "green");
+					}
+					
+					if(data[r][c] != "*" && data[r][c] != null && data[r][c].color != null)
+					{
+						game.map[r][c].css("color", "#" + (data[r][c].color).toString(16));
+					}
+				}
+			}
+		});
+
+		game.socket.on("moveUnits", function(data) {
+			if(data.initial != null) { 
+				game.visibleWorld[data.originRow][data.originCol]["units"] = (parseInt(game.visibleWorld[data.originRow][data.originCol]["units"]) - data.units);
+			}
+
+			let unit = $("<div/>", {
+				'id': 'unit'
+			});
+			
+			unit.css("top", game.map[data.originRow][data.originCol].offset().top);
+			unit.css("left", game.map[data.originRow][data.originCol].offset().left + (game.map[data.originRow][data.originCol].width() / 3));
+			unit.css("color", "#c90c0c");
+			$("#game").append(unit);
+
+			unit.animate({
+				top: game.map[data.destinationRow][data.destinationCol].offset().top,
+				left: game.map[data.destinationRow][data.destinationCol].offset().left + (game.map[data.destinationRow][data.destinationCol].width() / 3)
+			}, 3000, "linear", function() {
+				unit.remove();
+			});
+
+			
+		});
+
+		function gameLoop() {
+			var conquerHistory = [];
+			conquerHistory.push({row: bot.initialHex.row, col: bot.initialHex.col});
+
+			function makeInitialMovement() {
+				var n = getHexNeighbors(bot.initialHex.row, bot.initialHex.col);
+				var candidates = n.filter(function(hex) {
+					return(hex.owner == null)
+				});
+
+				var h = candidates[Math.floor(Math.random()*candidates.length)];
+				var u = Math.ceil(game.visibleWorld[bot.initialHex.row][bot.initialHex.col].units*0.8);
+
+				game.socket.emit("moveUnits", {
+					fromHex: [bot.initialHex.row, bot.initialHex.col],
+					toHex: [h.row, h.col],
+					units: u
+				});
+
+				logger.logEvent(logger.events.moveUnits(u, bot.initialHex.row, bot.initialHex.col, h.row, h.col));
+
+				doAction();
+			}
+
+			makeInitialMovement();
+
+			function doAction() {
+				var cooldown = bot.getCooldown();
+
+				var candidates = [];
+				var playerHexes = [];
+
+				for(var r = 0; r < game.mapRows; r++) {
+					for(var c = 0; c < game.mapCols; c++) {
+						if(game.visibleWorld[r][c] != null && game.visibleWorld[r][c] != "*" && game.visibleWorld[r][c].owner == null) {
+							candidates.push(getHex(r,c));
+						}
+
+						if(game.visibleWorld[r][c] != null && game.visibleWorld[r][c] != "*" && game.visibleWorld[r][c].owner == game.player.id) {
+							playerHexes.push(getHex(r,c));
+						}
+					}
+				}
+
+				candidates.sort(function(a,b) {
+					return(a.units - b.units);
+				});
+
+				playerHexes.sort(function(a,b) {
+					return(b.units - a.units);
+				});
+
+				var u = Math.ceil(playerHexes[0].units*0.75);
+
+				game.socket.emit("moveUnits", {
+					fromHex: [playerHexes[0].row, playerHexes[0].col],
+					toHex: [candidates[0].row, candidates[0].col],
+					units:u
+				});
+				
+				setTimeout(function() {
+					doAction();
+				}, cooldown)
+			}
+		}
+
+		window.addEventListener('error', function(event) {
+			game.socket.disconnect();
+		});
+	</script>
+	
+</html>

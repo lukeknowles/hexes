@@ -247,6 +247,10 @@ app.get('/', function (req, res) {
   res.sendFile(__dirname + '/client/client.html');
 });
 
+app.get('/bot', function (req, res) {
+	res.sendFile(__dirname + '/client/bot.html');
+});
+
 server.on("listening", function()
 {
 	console.log("==========================");
